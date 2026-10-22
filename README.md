@@ -117,6 +117,8 @@ The core service and its remote connection have separate status. NexusDock conne
 
 Windows stop and restart also clean up Core processes from older generations in the same installation. When the core is unhealthy, start waits for old processes to exit before launching the active generation so they cannot keep its port occupied.
 
+Windows named Cloudflare Tunnels monitor live connections and automatically rebuild a disconnected tunnel after VPN, DNS, or network changes. The control panel and tray show recovery state. Recovery uses backoff and rate limits; manually stopping the tunnel cancels background recovery.
+
 Dynamic MCP connections discard failed sessions so the next independent call can reconnect. ACP pipe writes and queued requests honor cancellation. MCP credentials stay within the configured origin, and clearing OAuth authorization prevents an in-flight exchange or refresh from restoring it.
 
 See [runtime access and recovery](./docs/runtime-access-and-recovery.md) for timeout rules, local API access restrictions, and regression checks.

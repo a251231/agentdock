@@ -19,6 +19,13 @@ type TunnelStatus struct {
 	PublicURL        string `json:"public_url,omitempty"`
 	DependencyState  string `json:"dependency_state,omitempty"`
 	ComponentVersion string `json:"component_version,omitempty"`
+	ConnectionState  string `json:"connection_state,omitempty"`
+	ReadyConnections uint   `json:"ready_connections,omitempty"`
+	OriginHealthy    bool   `json:"origin_healthy,omitempty"`
+	PublicChecked    bool   `json:"public_checked,omitempty"`
+	PublicReachable  bool   `json:"public_reachable,omitempty"`
+	RecoveryCount    int    `json:"recovery_count,omitempty"`
+	RecoveryReason   string `json:"recovery_reason,omitempty"`
 }
 
 // TunnelStatusForRuntime exposes the same local-only snapshot used by the CLI.

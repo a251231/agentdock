@@ -18,6 +18,22 @@
 - 保留已验证的 Tunnel supervisor 和更新调用链上的祖先进程；supervisor 可以属于同一安装内的旧 generation，PID 指向其他目录时仍拒绝。
 - 终止请求遇到进程同时自行退出时，以已打开句柄确认的退出状态为准；仍存活的权限错误与退出超时继续返回失败。
 
+## Windows 固定域名 Cloudflare Tunnel
+
+固定域名（Named Tunnel）的连接恢复由已有 Tunnel supervisor 统一管理。控制面板、托盘和 CLI 读取同一份本机健康快照，状态查询不会启动、停止或重新配置隧道。
+
+- 每 5 秒检查活动网卡、IP、DNS、接口度量、网关及 IPv4 默认/分流默认路由；网络变化只触发检查，健康连接继续运行。持续变化期间至少等待 3 秒稳定。
+- supervisor 为 cloudflared 显式分配回环指标端口，并核对监听 PID。以 `/ready` 的活动连接作为连接证据；历史注册日志和单纯进程存在不代表当前就绪。快照超过 20 秒、所属 supervisor 已退出或子进程路径不匹配时，状态不可用，不报 ready。
+- Core `/healthz` 独立判断本地服务健康；连接建立后及每 30 秒检查固定域名 `/healthz`。公网检查失败单独显示，不触发隧道进程重建。检查保持 TLS 验证、拒绝重定向，不发送认证凭据。
+- 新进程有 45 秒启动宽限；连续 30 秒无可用连接且网络已稳定后，先结束并等待当前 cloudflared 退出，再启动替代进程。固定域名、Token、配对信息及 Core 均沿用现有配置。
+- 重建时重新读取 component、Token 和当前 DNS。从当前活动接口中按 IPv4 接口度量选择优先接口的解析器，通过 cloudflared `--dns-resolver-addrs` 重新查询，避开上一套 VPN 遗留的 Windows 解析缓存。显式 `TUNNEL_DNS_RESOLVER_ADDRS` 配置优先；没有可用解析器时采用系统默认解析。需要企业 NRPT/加密 DNS 等特殊解析策略时，应显式配置适用解析器并验证。
+- 协议默认采用 cloudflared `auto`，显式 `TUNNEL_TRANSPORT_PROTOCOL` 配置优先。恢复退避从 5 秒增长至 1 分钟并加入抖动；滚动 5 分钟内最多启动 3 个子进程，超额等待窗口释放。活动连接连续健康 2 分钟后重置预算。网络恢复时如果处于冷却窗口，仍遵守该窗口。
+- 主动停止会取消健康请求、子进程和重试等待；同一安装目录继续由原有 mutex 保证单个 supervisor。退出时清除健康快照，后台不会在停止后自行恢复。
+
+状态包括 `connecting`、`connected`、`reconnecting`、`waiting_network`、`origin_unhealthy`、`public_unreachable`、`stopped` 和 `unknown`。CLI 保留 `running`、`ready`、`public_url`，增量返回 `connection_state`、`ready_connections`、`origin_healthy`、`public_checked`、`public_reachable`、`recovery_count`、`recovery_reason`。`ready` 要求当前 cloudflared 有连接且本地 Core 健康；公网验证结果独立返回。
+
+该恢复机制适用于 Windows 固定域名模式。Quick Tunnel 和 Unix 平台继续采用各自现有生命周期。网络中断时正在执行的请求可能失败，恢复机制不会重放有副作用的请求。
+
 ## NexusDock 连接
 
 - WebSocket 升级成功后，等待 `node.ready` 的预算为 15 秒；超时进入现有回退与重试流程。
@@ -60,6 +76,8 @@ go test -race ./...
 在 Windows 原生环境执行 `go test ./internal/desktopcontrol ./internal/desktopruntime ./internal/nexusbridge`，覆盖半条请求、未读取响应、等待响应期间取消、状态查询回退、握手无响应、失效连接自动重连，以及正常空闲连接保持在线。
 
 `go test ./internal/desktopruntime -run TestCoreRecovery` 使用真实 Windows 测试进程验证：旧 generation 占用端口、清理后新 generation 接管端口、启动前清理不健康旧 Core、保留健康 Core、旧版 supervisor 识别、进程退出竞态，以及其他安装与源版本 updater 不被误杀。
+
+`go test ./internal/desktopruntime -run 'TestNamedTunnel|TestTunnelReady|TestTunnelHealth|TestTunnelRecovery|TestTunnelNetwork|TestTunnelMetrics|TestTunnelStatus'` 覆盖固定域名隧道的持续断线恢复、替代进程启动前回收旧进程、DNS 刷新与显式覆盖、健康连接保留、退避限流、主动停止取消、指标端口归属，以及过期或不同 supervisor 的快照拒绝。
 
 `go test ./internal/mcp/client ./internal/mcp/oauthclient ./internal/acp ./internal/tool/file` 覆盖跨源凭据保护、后台发现畸形工具、失效会话恢复、授权清除与准备/换码/刷新竞态、真实匿名管道阻塞与排队取消，以及回滚恢复窗口的并发文件冲突。
 
