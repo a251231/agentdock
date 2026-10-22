@@ -111,6 +111,12 @@ AgentDock uses MCP Streamable HTTP. The exact client syntax varies; a typical lo
 
 See the [documentation](https://docs.nexusdock.co/agentdock/) for configuration and usage details.
 
+## Connection recovery
+
+The core service and its remote connection have separate status. NexusDock connections automatically reconnect after a handshake timeout or an unresponsive peer. On Windows, a stalled local control connection does not block other control requests or shutdown; status commands fall back to a system query after two seconds.
+
+See [runtime access and recovery](./docs/runtime-access-and-recovery.md) for timeout rules, local API access restrictions, and regression checks.
+
 ## Runtime directories
 
 | Path | Purpose |
