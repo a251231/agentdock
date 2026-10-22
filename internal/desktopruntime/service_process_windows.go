@@ -48,6 +48,7 @@ func stopBinaryProcessesExcept(ctx context.Context, binaryPath string, excluded 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		scanStartedAt := time.Now()
 		processes, err := processIDsAtPathsExcept(binaryPaths, excluded)
 		if err != nil {
 			return err
@@ -64,7 +65,9 @@ func stopBinaryProcessesExcept(ctx context.Context, binaryPath string, excluded 
 			return nil
 		} else if quietSince.IsZero() {
 			quietSince = time.Now()
-		} else if time.Since(quietSince) >= binaryStopQuietPeriod {
+		} else if scanStartedAt.Sub(quietSince) >= binaryStopQuietPeriod {
+			// 快照采集早于逐进程路径查询；慢扫描不能把旧的空快照误算为
+			// 最新状态，否则扫描期间刚拉起的替代进程会被漏掉。
 			return nil
 		}
 		remaining := time.Until(deadline)

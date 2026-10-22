@@ -9,17 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/uvwt/agentdock/internal/fs/pipeio"
 	"golang.org/x/sys/windows"
 )
-
-var cancelSynchronousIOProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
 
 func endpointPath(runtimeRoot string) string {
 	digest := sha256.Sum256([]byte(strings.ToLower(runtimeRoot)))
@@ -74,7 +71,7 @@ func servePlatform(ctx context.Context, runtimeRoot string, handle func(context.
 }
 
 func connectNamedPipe(ctx context.Context, pipe windows.Handle) error {
-	return runPipeIO(ctx, func() error {
+	return pipeio.Run(ctx, func() error {
 		err := windows.ConnectNamedPipe(pipe, nil)
 		if errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 			return nil
@@ -83,84 +80,13 @@ func connectNamedPipe(ctx context.Context, pipe windows.Handle) error {
 	})
 }
 
-// runPipeIO 让同步管道 I/O 服从上下文取消，包括连接、读取、写入和 flush。
-func runPipeIO(ctx context.Context, operation func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	type connectorState struct {
-		thread windows.Handle
-		err    error
-	}
-
-	ready := make(chan connectorState, 1)
-	connected := make(chan error, 1)
-	released := make(chan struct{})
-	defer close(released)
-	go func() {
-		// CancelSynchronousIo 只会取消指定线程发起的同步 I/O。
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		// 调用方停止 CancelSynchronousIo 后才释放线程，避免误取消复用该线程的其他 I/O。
-		defer func() { <-released }()
-
-		thread, err := windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
-		ready <- connectorState{thread: thread, err: err}
-		if err != nil {
-			connected <- err
-			return
-		}
-
-		if err := ctx.Err(); err != nil {
-			connected <- err
-			return
-		}
-		connected <- operation()
-	}()
-
-	connector := <-ready
-	if connector.err != nil {
-		return fmt.Errorf("open desktop control I/O thread: %w", connector.err)
-	}
-	defer windows.CloseHandle(connector.thread)
-
-	select {
-	case connectErr := <-connected:
-		return connectErr
-	case <-ctx.Done():
-		// 取消可能先于实际 I/O 发起（ERROR_NOT_FOUND），也可能落在两次 I/O 之间。
-		// 持续取消直到工作线程退出，之后调用方才可以安全关闭管道句柄。
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			_ = cancelSynchronousIO(connector.thread)
-			select {
-			case <-connected:
-				return ctx.Err()
-			case <-ticker.C:
-			}
-		}
-	}
-}
-
-func cancelSynchronousIO(thread windows.Handle) error {
-	result, _, callErr := cancelSynchronousIOProc.Call(uintptr(thread))
-	if result != 0 {
-		return nil
-	}
-	if callErr == syscall.Errno(0) {
-		return errors.New("CancelSynchronousIo failed without an error code")
-	}
-	return callErr
-}
-
 func servePipe(ctx context.Context, pipe windows.Handle, handle func(context.Context, []byte) []byte) {
 	defer windows.CloseHandle(pipe)
 	defer windows.DisconnectNamedPipe(pipe)
 	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
 	defer cancel()
 	var request []byte
-	err := runPipeIO(ctx, func() error {
+	err := pipeio.Run(ctx, func() error {
 		var err error
 		request, err = readPipeMessage(pipe)
 		return err
@@ -169,7 +95,7 @@ func servePipe(ctx context.Context, pipe windows.Handle, handle func(context.Con
 		return
 	}
 	response := handle(ctx, request)
-	_ = runPipeIO(ctx, func() error {
+	_ = pipeio.Run(ctx, func() error {
 		if err := writePipeMessage(pipe, response); err != nil {
 			return err
 		}
@@ -219,7 +145,7 @@ func callPlatform(ctx context.Context, runtimeRoot string, data []byte) ([]byte,
 	}
 	defer windows.CloseHandle(pipe)
 	var response []byte
-	err = runPipeIO(ctx, func() error {
+	err = pipeio.Run(ctx, func() error {
 		if err := writePipeMessage(pipe, data); err != nil {
 			return fmt.Errorf("write desktop control named pipe: %w", err)
 		}
