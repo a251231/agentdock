@@ -109,7 +109,16 @@ public sealed class RuntimeService : IDisposable
             File.Exists(Path.Combine(RuntimeRoot, "cloudflared-token.dpapi")),
             nexus,
             nexusConnected,
-            DateTimeOffset.Now);
+            DateTimeOffset.Now,
+            nativeTunnel?.ConnectionState ?? "",
+            nativeTunnel?.ReadyConnections ?? 0,
+            nativeTunnel?.RecoveryCount ?? 0);
+    }
+
+    internal async Task<NativeTunnelStatus?> ReadTunnelStatusAsync(CancellationToken cancellationToken = default)
+    {
+        var manifest = await ReadRuntimeManifestAsync(cancellationToken) ?? new RuntimeManifest();
+        return await ReadNativeTunnelStatusAsync(ResolveCoreBinaryPath(manifest), cancellationToken);
     }
 
     public async Task<ControlPanelSettings> GetControlPanelSettingsAsync(

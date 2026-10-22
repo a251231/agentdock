@@ -147,6 +147,15 @@ internal sealed class NativeServiceStatus
 
 internal sealed class NativeTunnelStatus
 {
+    [JsonPropertyName("connection_state")]
+    public string ConnectionState { get; set; } = "";
+
+    [JsonPropertyName("ready_connections")]
+    public int ReadyConnections { get; set; }
+
+    [JsonPropertyName("recovery_count")]
+    public int RecoveryCount { get; set; }
+
     [JsonPropertyName("mode")]
     public string Mode { get; set; } = "none";
 
@@ -208,7 +217,10 @@ public sealed record RuntimeSnapshot(
     bool TunnelTokenStored,
     NexusDeviceStatus Nexus,
     bool NexusConnected,
-    DateTimeOffset CheckedAt);
+    DateTimeOffset CheckedAt,
+    string TunnelConnectionState = "",
+    int TunnelReadyConnections = 0,
+    int TunnelRecoveryCount = 0);
 
 public sealed record PublicEndpointCheckResult(
     bool IsReachable,
