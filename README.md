@@ -115,6 +115,8 @@ See the [documentation](https://docs.nexusdock.co/agentdock/) for configuration 
 
 The core service and its remote connection have separate status. NexusDock connections automatically reconnect after a handshake timeout or an unresponsive peer. On Windows, a stalled local control connection does not block other control requests or shutdown; status commands fall back to a system query after two seconds.
 
+Windows stop and restart also clean up Core processes from older generations in the same installation. When the core is unhealthy, start waits for old processes to exit before launching the active generation so they cannot keep its port occupied.
+
 See [runtime access and recovery](./docs/runtime-access-and-recovery.md) for timeout rules, local API access restrictions, and regression checks.
 
 ## Runtime directories
