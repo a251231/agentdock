@@ -121,6 +121,8 @@ Dynamic MCP connections discard failed sessions so the next independent call can
 
 See [runtime access and recovery](./docs/runtime-access-and-recovery.md) for timeout rules, local API access restrictions, and regression checks.
 
+Personal forks can use the `Fork Test Release` workflow without official publishing credentials. See [fork test releases](./docs/release-distribution.md#个人-fork-测试发布).
+
 ## Runtime directories
 
 | Path | Purpose |

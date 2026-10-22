@@ -125,6 +125,8 @@ Windows 停止与重启会清理同一安装目录内的旧版本 Core 残留。
 
 超时规则、本地 API 访问限制与回归检查见[运行时访问与连接恢复](./docs/runtime-access-and-recovery.md)。
 
+个人 Fork 的无官方凭据测试发布使用 `Fork Test Release` 工作流，详见[测试版发布](./docs/release-distribution.md#个人-fork-测试发布)。
+
 ## 运行目录
 
 | 路径 | 用途 |

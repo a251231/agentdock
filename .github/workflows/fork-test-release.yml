@@ -1,0 +1,232 @@
+name: Fork Test Release
+run-name: Fork test ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Unofficial prerelease tag, for example v1.1.1-fork.1'
+        required: true
+        type: string
+
+concurrency:
+  group: fork-test-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    if: github.repository != 'uvwt/agentdock' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      version: ${{ steps.source.outputs.version }}
+      core_version: ${{ steps.source.outputs.core_version }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Validate new fork prerelease
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[1-9][0-9]*$ ]]
+          metadata="$(go run ./tools/release release-metadata "$RELEASE_TAG")"
+          test "$(jq -r .prerelease <<<"$metadata")" = true
+          error_file="$RUNNER_TEMP/tag-error.log"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>"$error_file"; then
+            echo 'Tag already exists; choose a new fork prerelease.' >&2
+            exit 1
+          elif ! grep -Eq '\(HTTP 404\)$' "$error_file"; then
+            cat "$error_file" >&2
+            exit 1
+          fi
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "version=$(jq -r .version <<<"$metadata")"
+            echo "core_version=$(jq -r .core_version <<<"$metadata")"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Test Linux with race detection
+        run: go test -race ./... -count=1 -timeout=3m
+
+  linux:
+    needs: [source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build Linux archive
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p payload/bin dist
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/uvwt/agentdock/internal/buildinfo.Version=$RELEASE_VERSION -X github.com/uvwt/agentdock/internal/buildinfo.Commit=$GITHUB_SHA -X github.com/uvwt/agentdock/internal/buildinfo.BuildDate=$build_date" \
+            -o payload/bin/agentdock ./cmd/agentdock
+          python3 packaging/build-core-skill-bundle.py --output payload/share/agentdock/core-skills
+          cp LICENSE payload/LICENSE
+          tar -C payload -czf "dist/agentdock_linux_$GOARCH.tar.gz" bin share LICENSE
+          (cd dist && sha256sum "agentdock_linux_$GOARCH.tar.gz" > "agentdock_linux_$GOARCH.tar.gz.sha256")
+          if [[ "$GOARCH" == amd64 ]]; then
+            payload/bin/agentdock --version | grep -F "$RELEASE_VERSION"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    needs: [source]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test Windows
+        if: matrix.arch == 'amd64'
+        run: go test ./... -count=1 -timeout=3m
+      - name: Build unsigned Windows payload and Setup
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+          WINDOWS_VERSION: ${{ needs.source.outputs.core_version }}.0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Path payload, dist -Force | Out-Null
+          $buildDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $ldflags = "-s -w -X github.com/uvwt/agentdock/internal/buildinfo.Version=$env:RELEASE_VERSION -X github.com/uvwt/agentdock/internal/buildinfo.Commit=$env:GITHUB_SHA -X github.com/uvwt/agentdock/internal/buildinfo.BuildDate=$buildDate"
+          go build -trimpath -ldflags $ldflags -o payload/agentdock.exe ./cmd/agentdock
+          go build -trimpath -ldflags $ldflags -o payload/agentdock-arbiter.exe ./cmd/agentdock-arbiter
+          go build -trimpath -ldflags $ldflags -o payload/agentdock-shim.exe ./cmd/agentdock-shim
+          go build -trimpath -ldflags "$ldflags -H=windowsgui" -o payload/agentdock-tray-shim.exe ./cmd/agentdock-shim
+          $rid = if ($env:GOARCH -eq 'arm64') { 'win-arm64' } else { 'win-x64' }
+          dotnet publish ./desktop/windows/winui/AgentDock.WinUI.csproj `
+            -c Release -r $rid --self-contained false `
+            -p:Version=$env:WINDOWS_VERSION -p:FileVersion=$env:WINDOWS_VERSION `
+            -p:AssemblyVersion=$env:WINDOWS_VERSION -p:InformationalVersion=$env:RELEASE_VERSION `
+            -o payload/control-panel
+          Copy-Item payload/control-panel/agentdock-tray.exe payload/agentdock-tray.exe
+          & ./packaging/windows/set-version-info.ps1 -Version $env:WINDOWS_VERSION -ProductVersion $env:RELEASE_VERSION -Path @(
+            'payload/agentdock.exe', 'payload/agentdock-tray.exe', 'payload/agentdock-arbiter.exe',
+            'payload/agentdock-shim.exe', 'payload/agentdock-tray-shim.exe'
+          )
+          Copy-Item payload/agentdock-tray.exe payload/control-panel/agentdock-tray.exe -Force
+          & ./packaging/windows/build-wsl-helper-payload.ps1 -OutputDirectory payload/wsl-helper
+          python ./packaging/build-core-skill-bundle.py --output payload/share/agentdock/core-skills
+          Copy-Item packaging/windows/assets/agentdock.ico payload/agentdock.ico
+          Copy-Item packaging/windows/compat/manage-windows.ps1 payload/manage-windows.ps1
+          Copy-Item LICENSE payload/LICENSE
+          $archive = Join-Path $PWD "dist/agentdock_windows_$env:GOARCH.zip"
+          Compress-Archive -Path payload/* -DestinationPath $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$archive.sha256", "$hash  $([IO.Path]::GetFileName($archive))`n", [Text.UTF8Encoding]::new($false))
+          & ./packaging/windows/build-windows-setup.ps1 -Version $env:RELEASE_VERSION `
+            -Architecture $env:GOARCH -AgentDockArchive $archive -AgentDockChecksumFile "$archive.sha256" `
+            -OutputDirectory (Join-Path $PWD 'dist')
+          $setup = Join-Path $PWD "dist/AgentDockSetup-$env:GOARCH.exe"
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$setup.sha256", "$hash  $([IO.Path]::GetFileName($setup))`n", [Text.UTF8Encoding]::new($false))
+          if ($env:GOARCH -eq 'amd64') {
+            $actualVersion = (& ./payload/agentdock.exe --version | Out-String)
+            if (-not $actualVersion.Contains($env:RELEASE_VERSION)) { throw "Unexpected version: $actualVersion" }
+          }
+      - name: Test AMD64 Setup install and uninstall
+        if: matrix.arch == 'amd64'
+        shell: powershell
+        run: |
+          & ./scripts/test/test-windows-setup-e2e.ps1 `
+            -SetupPath (Join-Path $PWD 'dist/AgentDockSetup-amd64.exe') `
+            -LegacyCorePath (Join-Path $PWD 'payload/agentdock.exe') `
+            -LegacyTrayPath (Join-Path $PWD 'payload/agentdock-tray.exe') `
+            -AllowLegacyTaskMutation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-windows-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [source, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fork-*
+          merge-multiple: true
+          path: dist
+      - name: Verify assets and publish unofficial prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.source.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          cd dist
+          for arch in amd64 arm64; do
+            for asset in "agentdock_linux_$arch.tar.gz" "agentdock_windows_$arch.zip" "AgentDockSetup-$arch.exe"; do
+              test -s "$asset"
+              sha256sum --check "$asset.sha256"
+            done
+          done
+          cat ./*.sha256 > SHA256SUMS.txt
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ## 非官方测试版 / Unofficial test build
+
+          基于提交 $SOURCE_COMMIT，包含连接恢复、Windows 旧进程清理、ACP 管道取消、OAuth 撤销及文件回滚修复。
+
+          - Windows amd64/arm64：Setup 安装包及完整 payload ZIP；Linux amd64/arm64：CLI 归档。
+          - Windows 安装包和程序未进行 Authenticode 签名，Windows 可能提示未知发布者；仅供人工测试，不属于官方自动更新渠道。
+          - 不使用官方签名凭据，不发布 R2 或容器镜像，不修改官方 Stable 更新入口。运行时服务地址仍遵循源码配置。
+          - 可使用 SHA256SUMS.txt 验证下载文件；不建议覆盖正式安装，测试前请备份用户配置。
+          - Linux 竞态测试、Windows 测试和 AMD64 Setup 安装/卸载验证通过后才发布；ARM64 为交叉构建，未经 ARM64 实机验证。
+          EOF
+          gh release create "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_COMMIT" --prerelease --latest=false \
+            --title "AgentDock $RELEASE_TAG (unofficial test)" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
