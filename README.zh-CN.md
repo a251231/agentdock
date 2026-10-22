@@ -115,6 +115,12 @@ AgentDock 使用 MCP Streamable HTTP。下面是本地连接的通用配置示�
 
 配置与使用详情见[在线文档](https://docs.nexusdock.co/agentdock/)。
 
+## 连接恢复
+
+核心服务运行状态与远程连接状态分别显示。NexusDock 连接在握手超时或对端失去响应后自动重连。Windows 本地控制连接卡住时，不阻塞其他控制请求或后台退出；状态命令等待两秒后回退到系统查询。
+
+超时规则、本地 API 访问限制与回归检查见[运行时访问与连接恢复](./docs/runtime-access-and-recovery.md)。
+
 ## 运行目录
 
 | 路径 | 用途 |
