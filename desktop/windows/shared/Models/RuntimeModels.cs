@@ -4,6 +4,9 @@ namespace AgentDock.ControlPanel;
 
 public sealed class RuntimeManifest
 {
+    [JsonPropertyName("agentdock_home")]
+    public string AgentDockHome { get; set; } = "";
+
     [JsonPropertyName("install_root")]
     public string InstallRoot { get; set; } = "";
 
@@ -51,6 +54,21 @@ public sealed class RuntimeManifest
 
     [JsonPropertyName("cloudflared_startup_value_name")]
     public string CloudflaredStartupValueName { get; set; } = "AgentDockCloudflared";
+}
+
+internal static class AgentDockStatePaths
+{
+    internal static string ResolveHome(RuntimeManifest manifest, string? environmentHome, string userHome)
+    {
+        var configured = manifest.AgentDockHome?.Trim();
+        if (string.IsNullOrWhiteSpace(configured)) configured = environmentHome?.Trim();
+        return System.IO.Path.GetFullPath(string.IsNullOrWhiteSpace(configured)
+            ? System.IO.Path.Combine(userHome, ".agentdock")
+            : configured);
+    }
+
+    internal static string NexusIdentityPath(RuntimeManifest manifest, string? environmentHome, string userHome) =>
+        System.IO.Path.Combine(ResolveHome(manifest, environmentHome, userHome), "nexus", "device.json");
 }
 
 public sealed class AcpProfileSettings

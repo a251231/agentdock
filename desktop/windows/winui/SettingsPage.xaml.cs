@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
@@ -296,6 +297,7 @@ public sealed partial class SettingsPage : Page
             OffContent = ""
         };
         toggle.Toggled += PrivilegeToggle_Toggled;
+        AutomationProperties.SetName(toggle, UiText.Get("RunCoreElevated"));
         rows.Children.Add(ActionRow(UiText.Get("RunCoreElevated"), toggle));
         return rows;
     }
@@ -312,6 +314,7 @@ public sealed partial class SettingsPage : Page
             OffContent = ""
         };
         core.Toggled += StartupToggle_Toggled;
+        AutomationProperties.SetName(core, UiText.Get("CoreBackgroundService"));
         rows.Children.Add(ActionRow(UiText.Get("CoreBackgroundService"), core));
         rows.Children.Add(Divider());
         var tray = new ToggleSwitch
@@ -323,6 +326,7 @@ public sealed partial class SettingsPage : Page
             OffContent = ""
         };
         tray.Toggled += StartupToggle_Toggled;
+        AutomationProperties.SetName(tray, UiText.Get("TrayApp"));
         rows.Children.Add(ActionRow(UiText.Get("TrayApp"), tray));
         return rows;
     }
@@ -338,6 +342,7 @@ public sealed partial class SettingsPage : Page
         theme.Items.Add(new ComboBoxItem { Content = UiText.Get("DarkTheme"), Tag = UiThemePreference.DarkPreference });
         SelectComboTag(theme, UiThemePreference.ReadPreference());
         theme.SelectionChanged += ThemePreference_SelectionChanged;
+        AutomationProperties.SetName(theme, UiText.Get("Theme"));
         rows.Children.Add(ActionRow(UiText.Get("Theme"), theme));
         rows.Children.Add(Divider());
 
@@ -347,6 +352,7 @@ public sealed partial class SettingsPage : Page
         language.Items.Add(new ComboBoxItem { Content = UiText.Get("EnglishLanguage"), Tag = UiText.EnglishPreference });
         SelectComboTag(language, UiText.ReadPreference());
         language.SelectionChanged += LanguagePreference_SelectionChanged;
+        AutomationProperties.SetName(language, UiText.Get("InterfaceLanguage"));
         rows.Children.Add(ActionRow(UiText.Get("InterfaceLanguage"), language));
         return rows;
     }

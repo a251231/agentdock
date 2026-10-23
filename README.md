@@ -81,6 +81,8 @@ On macOS and Windows, open **Connections** in the control panel to pair your dev
 
 For local MCP or direct public access, open **Settings → Advanced connection**, or use **Advanced connection settings** on the Connections page. This is where you find the local MCP address, access credentials, and Cloudflare settings for a temporary public address or fixed domain. For Linux and Docker, follow the installation documentation to configure the connection.
 
+On Windows, pairing uses the data directory recorded by the installer, including custom locations. On macOS, status refreshes preserve unsaved connection and capability settings. Custom ACP profile names can contain Chinese characters; the control panel generates a compatible internal ID automatically.
+
 ## Direct MCP connection
 
 When connecting directly, add the MCP address and Bearer Token or OAuth sign-in details to your client's MCP, Tools, or Connectors settings. Public access must keep authentication enabled. Do not include credentials in screenshots, issues, or public conversations.
