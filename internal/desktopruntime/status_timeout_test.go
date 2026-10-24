@@ -3,6 +3,7 @@ package desktopruntime
 import (
 	"context"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -17,7 +18,13 @@ func TestStatusCommandFallsBackWhenControlHandlerStalls(t *testing.T) {
 		{"service", RunServiceCommand}, {"tunnel", RunTunnelCommand},
 	} {
 		t.Run(command.name, func(t *testing.T) {
-			root := t.TempDir()
+			// macOS 的 Unix domain socket 路径长度较短；t.TempDir 会把完整测试名
+			// 拼进目录名，GitHub runner 上可能让 control.sock 超过 sockaddr_un 上限。
+			root, err := os.MkdirTemp("", "adctl-")
+			if err != nil {
+				t.Fatalf("create short control runtime root: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() {
