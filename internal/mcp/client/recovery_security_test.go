@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -131,6 +132,120 @@ func TestExpiredSessionRecoversOnNextIndependentCall(t *testing.T) {
 	}
 	if count.Load() != 2 {
 		t.Errorf("initializations = %d, want 2", count.Load())
+	}
+}
+
+func TestHungSessionDeleteDoesNotBlockNextCall(t *testing.T) {
+	deleteStarted := make(chan struct{})
+	var started sync.Once
+	var expired atomic.Bool
+	var initializations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if r.Header.Get("Mcp-Session-Id") == "old-session" {
+				started.Do(func() { close(deleteStarted) })
+				<-r.Context().Done()
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var q struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// 404 会让 SDK 跳过 DELETE；500/502 会保留逻辑连接。
+		// 普通 400 才会进入连接失败清理，并仍然发出没有调用方超时的 DELETE。
+		if expired.Load() && r.Header.Get("Mcp-Session-Id") == "old-session" {
+			http.Error(w, "upstream failed", http.StatusBadRequest)
+			return
+		}
+		switch q.Method {
+		case "server/discover":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": q.ID, "error": map[string]any{"code": -32601, "message": "Method not found"}})
+		case "initialize":
+			initializations.Add(1)
+			sessionID := "old-session"
+			if expired.Load() {
+				sessionID = "new-session"
+			}
+			w.Header().Set("Mcp-Session-Id", sessionID)
+			writeRPCResult(t, w, q.ID, map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "review", "version": "1"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeRPCResult(t, w, q.ID, map[string]any{"tools": []map[string]any{{"name": "echo", "inputSchema": map[string]any{"type": "object"}}}})
+		case "tools/call":
+			writeRPCResult(t, w, q.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}})
+		default:
+			http.Error(w, "unexpected method", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = manager.Close() }()
+	if _, err := manager.Add(ServerConfig{Name: "review", Description: "Hung delete regression", Transport: TransportStreamableHTTP, URL: server.URL, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.Refresh(context.Background(), "review"); err != nil {
+		t.Fatal(err)
+	}
+	expired.Store(true)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, callErr := manager.Call(context.Background(), "review:echo", map[string]any{})
+		firstDone <- callErr
+	}()
+	select {
+	case <-deleteStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session delete did not start")
+	}
+
+	listed := make(chan ServerSummary, 1)
+	go func() { listed <- manager.List()[0] }()
+	select {
+	case state := <-listed:
+		if state.Status != "error" || state.LastErrorCode != "MCP_CONNECTION_FAILED" || state.ToolCount != 0 {
+			t.Fatalf("cache still held during session close: %+v", state)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("listing server state blocked on session close")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, callErr := manager.Call(context.Background(), "review:echo", map[string]any{})
+		secondDone <- callErr
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("next call blocked by hung session delete: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("next call did not recover while session delete was still hung")
+	}
+	if initializations.Load() != 2 {
+		t.Fatalf("initializations = %d, want 2", initializations.Load())
+	}
+
+	select {
+	case err := <-firstDone:
+		var connectionErr *Error
+		if !errors.As(err, &connectionErr) || connectionErr.Code != "MCP_CONNECTION_FAILED" {
+			t.Fatalf("expired call error = %v, want MCP_CONNECTION_FAILED", err)
+		}
+	case <-time.After(mcpSessionCloseTimeout + 2*time.Second):
+		t.Fatal("session close was not cancelled by its own timeout")
 	}
 }
 
