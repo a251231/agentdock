@@ -297,6 +297,15 @@ function Assert-NamedRuntime {
     }
 
     Wait-ProcessCountByPath -ProcessName 'cloudflared' -BinaryPath $cloudflaredBinary -ExpectedCount 1
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $tunnelStatus = (& $agentDockBinary tunnel status --runtime-root $runtimeDir | ConvertFrom-Json)
+        if ($tunnelStatus.running -and $tunnelStatus.ready) { break }
+        if ([DateTime]::UtcNow -ge $readyDeadline) {
+            throw 'Installer did not restore the running Named Tunnel supervisor.'
+        }
+        Start-Sleep -Milliseconds 250
+    } while ($true)
     $tunnelStartupCommand = Get-ItemPropertyValue -LiteralPath $runKey -Name $cloudflaredStartupName
     if (-not $tunnelStartupCommand.Contains($trayBinary) -or -not $tunnelStartupCommand.Contains('--start-tunnel')) {
         throw "Named Tunnel startup entry is not native: $tunnelStartupCommand"
@@ -328,13 +337,8 @@ function Invoke-Installer {
         throw "Base installer failed with exit code $LASTEXITCODE."
     }
 
-    # Core install/update is independent from Cloudflare. Restart the already-configured
-    # Tunnel through the runtime command so this test cannot pass via installer hooks.
-    Remove-Item -LiteralPath $namedTokenEnvMarker -Force -ErrorAction SilentlyContinue
-    & $agentDockBinary tunnel restart --runtime-root $runtimeDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "Named Tunnel restart after Core install failed with exit code $LASTEXITCODE."
-    }
+    # Repair and upgrade must restore a Tunnel that was running before installation.
+    # Do not restart it here: that would hide a lost supervisor after Core replacement.
 }
 
 $testId = [Guid]::NewGuid().ToString('N')
@@ -460,8 +464,44 @@ try {
         -ExpectedOAuthPasswordHash $oauthPasswordHash `
         -ExpectedOAuthSecretHash $oauthSecretHash
 
-    # Same-version repair omits mode, origin and Token. All three must be hydrated from committed runtime state.
+    # A deliberately stopped Tunnel must stay stopped even when autostart is enabled.
+    & $agentDockBinary tunnel stop --runtime-root $runtimeDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the isolated Named Tunnel.' }
     Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    $stoppedTunnel = (& $agentDockBinary tunnel status --runtime-root $runtimeDir | ConvertFrom-Json)
+    if ($stoppedTunnel.running) { throw 'Repair unexpectedly started a deliberately stopped Tunnel.' }
+    & $agentDockBinary tunnel start --runtime-root $runtimeDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restart the isolated Named Tunnel before repair.' }
+
+    # Same-version repair omits mode, origin and Token. Existing running state must be restored.
+    Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    Assert-NamedRuntime `
+        -ExpectedVersion $sourceVersion `
+        -ExpectedTokenHash $tokenHash `
+        -ExpectedAuthHash $authHash `
+        -ExpectedOAuthPasswordHash $oauthPasswordHash `
+        -ExpectedOAuthSecretHash $oauthSecretHash
+
+    # Fail after candidate activation but before commit. Rollback must resume the
+    # original Tunnel through the restored source generation, without test-side restart.
+    $rollbackInstaller = Join-Path $root 'install-fail-before-commit.ps1'
+    $installerText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $InstallerPath).Path)
+    $commitMarker = '    if ($enginePrepared -and (-not $engineCommitted -or $healthStatus -eq ''healthy'')) {'
+    if (-not $installerText.Contains($commitMarker)) { throw 'Missing pre-commit fault injection boundary.' }
+    $installerText = $installerText.Replace($commitMarker, "    throw 'simulated pre-commit adapter failure'`r`n" + $commitMarker)
+    [IO.File]::WriteAllText($rollbackInstaller, $installerText, [Text.UTF8Encoding]::new($false))
+    $originalInstaller = $InstallerPath
+    $rollbackObserved = $false
+    try {
+        $InstallerPath = $rollbackInstaller
+        Invoke-Installer -Archive $TargetAgentDockArchive -Checksum $TargetAgentDockChecksumFile
+    } catch {
+        if (-not $_.Exception.Message.Contains('simulated pre-commit adapter failure')) { throw }
+        $rollbackObserved = $true
+    } finally {
+        $InstallerPath = $originalInstaller
+    }
+    if (-not $rollbackObserved) { throw 'Pre-commit failure was not injected.' }
     Assert-NamedRuntime `
         -ExpectedVersion $sourceVersion `
         -ExpectedTokenHash $tokenHash `

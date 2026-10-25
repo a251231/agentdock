@@ -732,6 +732,43 @@ function Stop-AgentDockTrayForUpgrade {
     return Stop-ProcessesForUpgrade -ProcessName 'agentdock-tray' -BinaryPath $BinaryPath
 }
 
+function Get-AgentDockTunnelRunning {
+    param([string] $BinaryPath, [string] $RuntimeRoot)
+
+    $statusJson = (& $BinaryPath tunnel status --runtime-root $RuntimeRoot 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to capture Tunnel state before upgrade (exit $LASTEXITCODE)."
+    }
+    $status = $statusJson | ConvertFrom-Json
+    if ($null -eq $status -or $null -eq $status.PSObject.Properties['running'] -or
+        $status.running -isnot [bool]) {
+        throw 'Tunnel status did not report a valid running state.'
+    }
+    # Named status distinguishes a live supervisor in backoff from a stopped Tunnel.
+    return $status.running -or (
+        $null -ne $status.PSObject.Properties['connection_state'] -and
+        -not [string]::IsNullOrWhiteSpace([string] $status.connection_state) -and
+        $status.connection_state -ne 'stopped'
+    )
+}
+
+function Resume-AgentDockTunnel {
+    param([string] $BinaryPath, [string] $RuntimeRoot)
+
+    if ($InstallChannel -eq 'setup') {
+        Invoke-SetupRuntimeProcess `
+            -FilePath $BinaryPath `
+            -Arguments "tunnel start --runtime-root `"$RuntimeRoot`"" `
+            -WaitForExit
+    } else {
+        $resumeArgs = @('tunnel', 'start', '--runtime-root', $RuntimeRoot)
+        & $BinaryPath @resumeArgs 1>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Tunnel resume failed with exit code $LASTEXITCODE."
+        }
+    }
+}
+
 function Start-HiddenPowerShellScript {
     param([string] $ScriptPath)
 
@@ -1005,6 +1042,7 @@ $runValueName = $StartupValueName
 $trayRunValueName = $TrayStartupValueName
 $processWasRunning = $false
 $trayProcessWasRunning = $false
+$tunnelWasRunning = $false
 $agentDockStopAttempted = $false
 $trayStopAttempted = $false
 $rollbackStateCaptured = $false
@@ -1436,6 +1474,12 @@ try {
         }
         $legacyBootstrapPrepared = $true
     }
+    # Capture before Task/Core replacement also terminates the old Tunnel supervisor.
+    # Fresh installs never probe or provision optional components.
+    if (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) {
+        $tunnelWasRunning = Get-AgentDockTunnelRunning -BinaryPath $sourceBinary -RuntimeRoot $runtimeDir
+    }
+
     if ($effectivePrivilegeMode -eq 'elevated' -or $taskState.Exists) {
         $taskAction = if ($effectivePrivilegeMode -eq 'elevated') { 'prepare-elevated' } else { 'prepare-standard' }
         $taskActionResult = Start-ElevatedAgentDockTaskAction `
@@ -1742,6 +1786,19 @@ exit `$LASTEXITCODE
         $engineCommitted = $true
     }
 
+    # Restore interrupted runtime state through its owner after Core commit. Explicit
+    # compatibility parameters below take precedence, including switching to local mode.
+    if ($tunnelWasRunning -and -not $legacyTunnelCompatibilityRequested) {
+        try {
+            Resume-AgentDockTunnel -BinaryPath $destinationBinary -RuntimeRoot $runtimeDir
+        } catch {
+            $resumeWarning = 'Core was installed successfully, but the previously running Tunnel could not be resumed. Open Settings > Advanced Connection to retry.'
+            if ([string]::IsNullOrWhiteSpace($installWarningMessage)) { $installWarningMessage = $resumeWarning } else { $installWarningMessage = "$installWarningMessage $resumeWarning" }
+            if ([string]::IsNullOrWhiteSpace($installWarningCode)) { $installWarningCode = 'tunnel-resume-deferred' } else { $installWarningCode = "$installWarningCode,tunnel-resume-deferred" }
+            Write-Warning "$resumeWarning Details: $($_.Exception.Message)"
+        }
+    }
+
     # Legacy Cloudflare parameters are forwarded to the component/tunnel CLI only after
     # Core commit succeeds. Compatibility failure may warn but must not roll back base install.
     if ($legacyTunnelCompatibilityRequested -and -not [string]::IsNullOrWhiteSpace($resolvedTunnelMode)) {
@@ -1962,6 +2019,9 @@ exit `$LASTEXITCODE
         }
         if ($trayProcessWasRunning -and (Test-Path -LiteralPath $destinationTrayBinary -PathType Leaf)) {
             Start-AgentDockTray -BinaryPath $destinationTrayBinary
+        }
+        if ($tunnelWasRunning) {
+            Resume-AgentDockTunnel -BinaryPath $destinationBinary -RuntimeRoot $runtimeDir
         }
     } catch {
         $rollbackError = $_
