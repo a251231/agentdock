@@ -1891,7 +1891,7 @@ exit `$LASTEXITCODE
     # old Core and its Tunnel supervisor alone, even in a generation layout.
     $rollbackRequired = $legacyBootstrapPrepared -or $taskTransactionStarted -or
         $agentDockStopAttempted -or $trayStopAttempted -or
-        $stableFilesMayBeReplaced -or $rollbackStateCaptured -or
+        $stableFilesMayBeReplaced -or
         $startupRegistrationChanged -or $trayStartupRegistrationChanged -or
         $enginePrepared -or $engineCommitted
     try {
@@ -1940,7 +1940,7 @@ exit `$LASTEXITCODE
             }
         }
 
-        if ($rollbackStateCaptured) {
+        if ($rollbackRequired -and $rollbackStateCaptured) {
             foreach ($item in $managedRuntimeFiles) {
                 Restore-FileState -Path $item.Path -Name $item.Name -BackupDirectory $runtimeBackupDir
             }
