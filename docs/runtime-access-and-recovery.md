@@ -78,7 +78,7 @@ Windows 配对和设备身份读取使用安装清单的 `agentdock_home`，与 
 
 ## 安装回滚与目录发布
 
-Windows 安装器在停止旧进程前通过原生 Tunnel 状态接口记录隧道运行状态。Core 提交成功后恢复升级前运行中的隧道；安装回滚时，在源版本恢复后重新启动原隧道。恢复仍由原生 Tunnel CLI 执行，Setup 使用既有的独立进程启动器。原本停止的隧道保持停止，显式传入的 Tunnel 配置优先。隧道恢复失败会报告 `tunnel-resume-deferred` 警告，不回滚已经健康提交的 Core；可在高级连接设置中重试。
+Windows 安装器在旧版迁移、任务变更或停止旧进程之前，通过原生 Tunnel 状态接口记录隧道运行状态。读取失败且尚未修改安装状态时直接中止，不停止原 Core/Tunnel。Core 提交成功后恢复升级前运行中的隧道；安装回滚时，在源版本恢复后重新启动原隧道。恢复仍由原生 Tunnel CLI 执行，Setup 使用既有的独立进程启动器。原本停止的隧道保持停止，显式传入的 Tunnel 配置优先。隧道恢复失败会报告 `tunnel-resume-deferred` 警告，不回滚已经健康提交的 Core，也不把已成功的 Core 回滚标记为外部回滚失败；可在高级连接设置中重试。
 
 Unix 同版本安装或修复在改写版本目录前保存快照，失败后恢复原目录；本次新建的版本目录在失败后移除。
 
@@ -97,7 +97,7 @@ go test -race ./...
 
 `go test ./internal/installer ./internal/publicartifacts ./internal/tool/file ./internal/tool/command ./internal/tool/command/session` 覆盖同版本回滚、目录符号链接、单文件与连字符查询、初始输入阻塞时的会话返回和取消，以及输入顺序、EOF 和错误保留。
 
-Windows 使用 `powershell -NoProfile -File scripts/test/test-install-windows.ps1` 验证安装脚本及隧道状态捕获、Setup 恢复调用、显式配置优先和恢复失败告警。`scripts/test/test-windows-named-tunnel-lifecycle.ps1` 使用独立目录、端口和模拟 cloudflared，验证停止状态保持、修复及升级自动恢复、安装失败回滚恢复和凭据不变；测试不在安装后手动重启隧道。
+Windows 使用 `powershell -NoProfile -File scripts/test/test-install-windows.ps1` 验证安装脚本及隧道状态捕获、Setup 恢复调用、显式配置优先和恢复失败告警。`scripts/test/test-windows-named-tunnel-lifecycle.ps1` 使用独立目录、端口和模拟 cloudflared，验证停止状态保持、修复及升级自动恢复、安装失败回滚恢复和凭据不变；另外故障注入验证状态读取失败不改变原进程 PID，以及 Tunnel 回滚恢复失败不污染安装事务、后续修复仍可执行。测试不在安装后手动重启隧道。
 
 在 Windows 原生环境执行 `go test ./internal/desktopcontrol ./internal/desktopruntime ./internal/nexusbridge`，覆盖半条请求、未读取响应、等待响应期间取消、状态查询回退、握手无响应、失效连接自动重连，以及正常空闲连接保持在线。
 

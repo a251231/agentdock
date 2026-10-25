@@ -1426,6 +1426,12 @@ try {
     # Setup upgrades and fresh installs share one Installer transaction. Do not pre-commit
     # the target generation through Update Engine before Task/Registry/runtime adapter work.
 
+    # Snapshot the existing Tunnel before legacy migration, Task changes, or process shutdown.
+    # A failed status read must not turn a healthy pre-upgrade runtime into a rollback victim.
+    if (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) {
+        $tunnelWasRunning = Get-AgentDockTunnelRunning -BinaryPath $sourceBinary -RuntimeRoot $runtimeDir
+    }
+
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     if (-not $generationLayoutDetected) {
         $processWasRunning = @(Get-AgentDockProcesses -BinaryPath $destinationBinary).Count -gt 0
@@ -1473,11 +1479,6 @@ try {
             throw 'Installer Engine legacy migration returned a different source version.'
         }
         $legacyBootstrapPrepared = $true
-    }
-    # Capture before Task/Core replacement also terminates the old Tunnel supervisor.
-    # Fresh installs never probe or provision optional components.
-    if (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) {
-        $tunnelWasRunning = Get-AgentDockTunnelRunning -BinaryPath $sourceBinary -RuntimeRoot $runtimeDir
     }
 
     if ($effectivePrivilegeMode -eq 'elevated' -or $taskState.Exists) {
@@ -1886,13 +1887,20 @@ exit `$LASTEXITCODE
     $taskRollbackError = $null
     $rollbackError = $null
     $taskRecoveryPath = ''
+    # Before any installer-owned mutation, failing preflight must leave both the
+    # old Core and its Tunnel supervisor alone, even in a generation layout.
+    $rollbackRequired = $legacyBootstrapPrepared -or $taskTransactionStarted -or
+        $agentDockStopAttempted -or $trayStopAttempted -or
+        $stableFilesMayBeReplaced -or $rollbackStateCaptured -or
+        $startupRegistrationChanged -or $trayStartupRegistrationChanged -or
+        $enginePrepared -or $engineCommitted
     try {
-        if ($effectivePrivilegeMode -eq 'elevated') {
+        if ($rollbackRequired -and $effectivePrivilegeMode -eq 'elevated') {
             # Stop the long-lived task owner before touching either stable shims or generation files.
             Stop-ScheduledTask -TaskName 'AgentDock' -TaskPath '\' -ErrorAction SilentlyContinue
             Start-Sleep -Milliseconds 500
         }
-        if ($generationLayoutDetected -or $enginePrepared) {
+        if ($rollbackRequired -and ($generationLayoutDetected -or $enginePrepared)) {
             # Target Core runs as agentdock-core.exe after both bootstrap and Update Engine.
             # Setup runtime hosts and elevated task hosts execute stable shims, so both layers
             # must be quiesced before rollback restores the stable entry files.
@@ -1995,7 +2003,7 @@ exit `$LASTEXITCODE
             Start-AgentDockTask -AgentDockBinary $sourceBinary -ExpectedUserSid $taskUser.Sid
             $taskWillRestartAgentDock = $true
         }
-        if ($processWasRunning -and -not $taskWillRestartAgentDock) {
+        if ($rollbackRequired -and $processWasRunning -and -not $taskWillRestartAgentDock) {
             if (Test-Path -LiteralPath $destinationBinary -PathType Leaf) {
                 # The Engine transaction has restored the committed source generation. Wait for the
                 # source Core to become healthy before confirming the outer adapter rollback.
@@ -2017,15 +2025,27 @@ exit `$LASTEXITCODE
         } elseif ($taskWillRestartAgentDock) {
             Wait-AgentDockHealth -HealthPort $Port -ExpectedVersion $existingActiveVersion
         }
-        if ($trayProcessWasRunning -and (Test-Path -LiteralPath $destinationTrayBinary -PathType Leaf)) {
+        if ($rollbackRequired -and $trayProcessWasRunning -and (Test-Path -LiteralPath $destinationTrayBinary -PathType Leaf)) {
             Start-AgentDockTray -BinaryPath $destinationTrayBinary
-        }
-        if ($tunnelWasRunning) {
-            Resume-AgentDockTunnel -BinaryPath $destinationBinary -RuntimeRoot $runtimeDir
         }
     } catch {
         $rollbackError = $_
         Write-Warning "AgentDock rollback failed: $($_.Exception.Message)"
+    }
+
+    # Tunnel availability is not part of the Core/Task/Registry rollback contract.
+    # Preserve the original install failure, and do not lock future installs if
+    # network or Tunnel credentials prevent the restored source from reconnecting.
+    if ($rollbackRequired -and $tunnelWasRunning -and
+        $null -eq $rollbackError -and $null -eq $taskRollbackError) {
+        try {
+            Resume-AgentDockTunnel -BinaryPath $destinationBinary -RuntimeRoot $runtimeDir
+        } catch {
+            $resumeWarning = 'The original Core was restored, but its Tunnel could not be resumed. Open Settings > Advanced Connection to retry.'
+            if ([string]::IsNullOrWhiteSpace($installWarningMessage)) { $installWarningMessage = $resumeWarning } else { $installWarningMessage = "$installWarningMessage $resumeWarning" }
+            if ([string]::IsNullOrWhiteSpace($installWarningCode)) { $installWarningCode = 'tunnel-resume-deferred' } else { $installWarningCode = "$installWarningCode,tunnel-resume-deferred" }
+            Write-Warning "$resumeWarning Details: $($_.Exception.Message)"
+        }
     }
 
     if (($enginePrepared -or $engineCommitted) -and (Test-Path -LiteralPath $sourceBinary -PathType Leaf)) {
@@ -2065,6 +2085,9 @@ exit `$LASTEXITCODE
         $resultMessage = "AgentDock installation failed and rollback did not complete. Original error: $($installError.Exception.Message) Rollback error: $($rollbackError.Exception.Message)"
         $resultErrorRecord = $rollbackError
     }
+    if ($installWarningCode -like '*tunnel-resume-deferred*') {
+        $resultMessage = "$resultMessage $resumeWarning"
+    }
 
     Write-InstallResult `
         -Path $ResultFile `
@@ -2078,7 +2101,9 @@ exit `$LASTEXITCODE
         -HealthStatus 'failed' `
         -PrivilegeMode $effectivePrivilegeMode `
         -ErrorCode $resultErrorCode `
-        -ErrorRecord $resultErrorRecord
+        -ErrorRecord $resultErrorRecord `
+        -WarningCode $installWarningCode `
+        -WarningMessage $installWarningMessage
     throw $installError
 } finally {
     if ($null -ne $previousConsoleOutputEncoding) {

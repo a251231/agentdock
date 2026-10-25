@@ -19,6 +19,13 @@
 
 ## 验证结果
 
+### PR #251 审查后的失败路径补充（2026-10-25）
+
+- 将运行状态捕获移至 legacy migration 与任何进程/任务变更之前；捕获失败时，未开始安装变更的回滚不得停止已有 Core 和 Tunnel。
+- 在 Windows 安装适配器中区分 Core/Task/Registry 回滚与 Tunnel 恢复：前者决定 `--rollback-failed`，后者失败只向安装结果追加 `tunnel-resume-deferred` 告警，保留原始安装错误。
+- Named Tunnel 生命周期测试增加故障注入：状态捕获失败后原 Core/supervisor PID 不变；模拟 Core 回滚成功但 Tunnel 恢复失败时，原版本仍健康、结果包含告警、下一次修复不受事务阻断。
+- Air 的 macOS 开发环境可执行 Go 测试和静态检查；Windows PowerShell 5.1、完整 Setup 及 Named 生命周期测试由 Windows CI 验证，不能以 macOS 测试代替。
+
 任务已完成。移除测试侧重启补偿后，原实现实际在同版本运行中修复后报 `Installer did not restore the running Named Tunnel supervisor.`，退出码 1；修复后完整 Named 生命周期两轮通过，后一轮包含提交前故障注入，退出码均为 0。
 
 - `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test/test-install-windows.ps1`：退出码 0；覆盖状态真假值、Named 退避状态、非法 JSON/读取失败、原生 start 调用、Setup broker 与带空格目录、停止状态保持、显式配置优先、失败告警。
