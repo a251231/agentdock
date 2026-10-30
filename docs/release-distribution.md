@@ -170,6 +170,20 @@ Prerelease 执行相同的构建、签名、候选验证和不可变 R2 上传�
 
 ## GitHub Actions 配置
 
+### 个人 Fork 测试发布
+
+个人仓库使用独立的 `.github/workflows/fork-test-release.yml`，仅允许在非官方仓库的 `main` 上手动触发。标签必须为 `v<major>.<minor>.<patch>-fork.<序号>`，例如 `v1.1.1-fork.1`，且不得已存在：
+
+```sh
+gh workflow run fork-test-release.yml --repo <owner>/agentdock --ref main -f tag=v1.1.1-fork.1
+```
+
+工作流固定使用触发时的提交，先执行 Linux 竞态检测和 Windows 测试，构建 Windows amd64/arm64 的未签名 Setup、完整 payload ZIP 与 Linux amd64/arm64 归档。Windows amd64 还执行 Setup 安装/卸载验证；ARM64 只做交叉构建。所有构建和验证成功后，校验产物 SHA-256，使用当前仓库 `GITHUB_TOKEN` 创建非 Latest 的 GitHub Prerelease。标签在发布时创建，无需事先推送会触发正式 Release 流程的 `v*` 标签。
+
+此流程不需要官方签名、R2 或 Docker Hub 凭据，不发布容器与 macOS 包。测试程序仍使用源码中的运行时服务地址；发布工作流不修改官方更新入口。未签名测试版不符合正式版自更新的签名要求，应人工下载安装，并在测试前备份配置，避免覆盖正式安装。重跑已发布版本必须递增 `fork` 序号，工作流不会删除或覆盖已有 Release。
+
+### 正式发布配置
+
 Repository Variables：
 
 - `R2_ACCOUNT_ID`：Cloudflare Account ID；

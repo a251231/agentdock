@@ -26,7 +26,7 @@ func TestWorkflowsUseCurrentActionMajors(t *testing.T) {
 		"uses: github/codeql-action/analyze@":   "uses: github/codeql-action/analyze@v4",
 	}
 	foundManagedAction := false
-	for _, name := range []string{"ci.yml", "codeql.yml", "release.yml", "windows-installer.yml"} {
+	for _, name := range []string{"ci.yml", "codeql.yml", "release.yml", "windows-installer.yml", "fork-test-release.yml"} {
 		workflow := readWorkflow(t, name)
 		for _, line := range strings.Split(workflow, "\n") {
 			trimmed := strings.TrimSpace(line)

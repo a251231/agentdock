@@ -111,6 +111,8 @@ AgentDock uses MCP Streamable HTTP. The exact client syntax varies; a typical lo
 
 See the [documentation](https://docs.nexusdock.co/agentdock/) for configuration and usage details.
 
+Personal forks can use the `Fork Test Release` workflow without official publishing credentials. See [fork test releases](./docs/release-distribution.md#个人-fork-测试发布).
+
 ## Runtime directories
 
 | Path | Purpose |

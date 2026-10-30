@@ -115,6 +115,8 @@ AgentDock 使用 MCP Streamable HTTP。下面是本地连接的通用配置示�
 
 配置与使用详情见[在线文档](https://docs.nexusdock.co/agentdock/)。
 
+个人 Fork 的无官方凭据测试发布使用 `Fork Test Release` 工作流，详见[测试版发布](./docs/release-distribution.md#个人-fork-测试发布)。
+
 ## 运行目录
 
 | 路径 | 用途 |
