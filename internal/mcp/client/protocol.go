@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	sdkjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -23,6 +24,11 @@ import (
 
 // go-sdk 公开 jsonrpc 包未导出 ErrRejected，只能通过稳定的 wire code 识别。
 const sdkTransportRejectedCode int64 = -32005
+
+// mcpSessionCloseTimeout 只约束会话终止的 HTTP DELETE。
+// SDK 用脱离工具调用超时的连接上下文发这个请求，并且要等它返回后才取消连接；
+// 对端不响应时必须由这里截止，避免清理一直占着服务器状态锁。
+const mcpSessionCloseTimeout = 5 * time.Second
 
 type protocolClient interface {
 	initialize(context.Context) error
@@ -359,8 +365,45 @@ func checkMCPRedirect(request *http.Request, via []*http.Request) error {
 	return nil
 }
 
+type sessionRetirementKey struct{}
+
+func contextWithSessionRetirement(ctx context.Context, retire func()) context.Context {
+	if retire == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionRetirementKey{}, retire)
+}
+
+func retireSessionFromContext(ctx context.Context) {
+	retire, _ := ctx.Value(sessionRetirementKey{}).(func())
+	if retire != nil {
+		retire()
+	}
+}
+
+// retiresMCPSession 报告这个 HTTP 状态会让 SDK 终止逻辑会话，并在返回调用方之前同步发 DELETE。
+// 临时故障和认证挑战会保留或重试连接，不能提前拆掉缓存。
+func retiresMCPSession(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return false
+	default:
+		return status >= 400
+	}
+}
+
 func (t headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
+	ctx := request.Context()
+	if request.Method == http.MethodDelete {
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, mcpSessionCloseTimeout)
+			defer cancel()
+		}
+	}
+	clone := request.Clone(ctx)
 	clone.Header = request.Header.Clone()
 	for name, values := range t.headers {
 		clone.Header.Del(name)
@@ -368,7 +411,14 @@ func (t headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, er
 			clone.Header.Add(name, value)
 		}
 	}
-	return http.DefaultTransport.RoundTrip(clone)
+	response, err := http.DefaultTransport.RoundTrip(clone)
+	if err != nil || response == nil || !retiresMCPSession(response.StatusCode) {
+		return response, err
+	}
+	// 调用协程此刻持有服务器状态锁。必须在把响应交回 SDK 之前退出缓存并放开锁：
+	// SDK 会在 CallTool 返回前同步发送 DELETE，对端不响应时不能继续占着这把锁。
+	retireSessionFromContext(request.Context())
+	return response, nil
 }
 
 type tailBuffer struct {

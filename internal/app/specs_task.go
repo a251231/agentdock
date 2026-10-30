@@ -7,9 +7,14 @@ import (
 )
 
 func taskManageToolSpecs() []ToolSpec {
-	return []ToolSpec{{Name: "task_manage", Contract: taskToolContract, Title: "Manage recoverable tasks", Description: "Persist substantial AgentDock tasks and update live step progress with checkpoint.", Annotations: mutatingToolAnnotations(false, false), Handler: typedToolHandler("task_manage", func(ctx context.Context, r *Runtime, request tooltask.ManageRequest) (Result, error) {
-		return r.taskTools.Manage(ctx, request)
-	})}}
+	return []ToolSpec{
+		{Name: "task_create", Contract: taskToolContract, Title: "Create recoverable task", Description: "Create one recoverable task before substantial multi-step work. Continue progress updates with task_manage.", Annotations: mutatingToolAnnotations(false, false), Handler: typedToolHandler("task_create", func(ctx context.Context, r *Runtime, request tooltask.CreateRequest) (Result, error) {
+			return r.taskTools.Manage(ctx, request.ManageRequest())
+		})},
+		{Name: "task_manage", Contract: taskToolContract, Title: "Manage recoverable tasks", Description: "Persist substantial AgentDock tasks and update live step progress with checkpoint.", Annotations: mutatingToolAnnotations(false, false), Handler: typedToolHandler("task_manage", func(ctx context.Context, r *Runtime, request tooltask.ManageRequest) (Result, error) {
+			return r.taskTools.Manage(ctx, request)
+		})},
+	}
 }
 
 func workflowToolSpecs() []ToolSpec {

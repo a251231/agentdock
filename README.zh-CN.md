@@ -115,18 +115,6 @@ AgentDock 使用 MCP Streamable HTTP。下面是本地连接的通用配置示�
 
 配置与使用详情见[在线文档](https://docs.nexusdock.co/agentdock/)。
 
-## 连接恢复
-
-核心服务运行状态与远程连接状态分别显示。NexusDock 连接在握手超时或对端失去响应后自动重连。Windows 本地控制连接卡住时，不阻塞其他控制请求或后台退出；状态命令等待两秒后回退到系统查询。
-
-Windows 停止与重启会清理同一安装目录内的旧版本 Core 残留。核心不健康时，启动操作先等待旧进程退出，再拉起当前版本，避免旧进程继续占用端口。
-
-Windows 固定域名 Cloudflare Tunnel 检测实际连接健康；VPN、DNS 或网络切换后持续断连时，会自动重建隧道进程，并在控制面板和托盘显示重连状态。恢复采用退避与限流，主动停止会取消后台恢复。
-
-动态 MCP 连接失效后会清理会话，下一次独立调用可重新连接。ACP 管道写入和排队等待支持取消。MCP 凭据仅发送给配置的同源地址；清除 OAuth 授权后，正在进行的换码或刷新不能恢复旧授权。
-
-超时规则、本地 API 访问限制与回归检查见[运行时访问与连接恢复](./docs/runtime-access-and-recovery.md)。
-
 个人 Fork 的无官方凭据测试发布使用 `Fork Test Release` 工作流，详见[测试版发布](./docs/release-distribution.md#个人-fork-测试发布)。
 
 ## 运行目录
@@ -140,7 +128,8 @@ Windows 固定域名 Cloudflare Tunnel 检测实际连接健康；VPN、DNS 或�
 
 | <div align="center"><strong>🏆&nbsp;赞助商&nbsp;🏆</strong></div> | <div align="center"><strong>介绍</strong></div> |
 | :------------- | :------ |
-| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>提供高质量动态和静态住宅代理，拥有 9000 万+住宅 IP，覆盖全球 220+ 个地区，支持 HTTP(S)、SOCKS5、IP 轮换与粘性会话，为 AI Agent、浏览器自动化和网页数据采集提供灵活的代理支持。动态住宅代理低至 $0.7/GB，使用优惠码 <code>PROXY90</code> 享受九折优惠。 |
+| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>提供高质量动态和静态住宅代理，拥有 9000 万+住宅 IP，覆盖全球 220+ 个地区，支持 HTTP(S)、SOCKS5、IP 轮换与粘性会话，为 AI Agent、浏览器自动化和网页数据采集提供灵活的代理支持。动态住宅代理低至 $0.7/GB，使用优惠码 <code>PROXY90</code> 享受九折优惠。 [了解详情 →](https://www.swiftproxy.net/?ref=agentdock) |
+| <a href="https://www.ipwo.net/?ref=githubagentdock"><img src="./docs/assets/sponsors/ipwo-logo.png" width="180" alt="IPWO"></a> | <br>[**IPWO**](https://www.ipwo.net/?ref=githubagentdock)<br>为 AI Agent 与自动化工作流提供灵活的网络连接支持。IPWO 住宅代理覆盖 195+ 个国家和地区，提供动态代理、静态代理和不限量代理，支持 HTTP(S)/SOCKS5，适用于跨地区访问测试、网页自动化与合规数据采集，助力开发者探索更多应用场景。使用优惠码 <code>0200</code> 享受九折优惠。 [了解详情 →](https://www.ipwo.net/?ref=githubagentdock) |
 
 想支持项目或展示品牌？[联系维护者](mailto:t80980@gmail.com)。
 

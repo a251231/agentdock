@@ -50,7 +50,7 @@ func (s *Server) appResourceDefinitions() []appResourceDefinition {
 			URI:         protocol.TaskProgressUIResourceURI,
 			Name:        "agentdock-task-progress",
 			Title:       "AgentDock task",
-			Description: "Compact read-only task lifecycle view for task_manage results and task snapshots.",
+			Description: "Read-only task lifecycle view that keeps one task card synchronized with authoritative task state.",
 			HTML:        mcpapps.HTML("task_progress", "Task"),
 		},
 		{

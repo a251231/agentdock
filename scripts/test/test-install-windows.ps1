@@ -23,6 +23,96 @@ if ($errors.Count -gt 0) {
 }
 
 $content = Get-Content -LiteralPath $resolvedInstaller -Raw
+$tunnelFunctions = foreach ($name in @('Get-AgentDockTunnelRunning', 'Resume-AgentDockTunnel')) {
+    $definition = $installerAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $true)
+    if ($null -eq $definition) { throw "Missing upgrade Tunnel function: $name" }
+    $definition.Extent.Text
+}
+$resumeBlock = $installerAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Extent.Text.StartsWith('if ($tunnelWasRunning -and -not $legacyTunnelCompatibilityRequested)')
+}, $true)
+if ($null -eq $resumeBlock) { throw 'Missing post-commit Tunnel restoration.' }
+$tunnelProbe = [scriptblock]::Create(($tunnelFunctions -join "`r`n") + @'
+
+$script:tunnelStatusJson = '{"running":false,"connection_state":"stopped"}'
+$script:tunnelExit = 0
+$script:tunnelCalls = @()
+function Invoke-TestTunnelCli {
+    $script:tunnelCalls += ,@($args)
+    $global:LASTEXITCODE = $script:tunnelExit
+    if ($args[1] -eq 'status') { $script:tunnelStatusJson }
+}
+foreach ($case in @(
+    @{ Json = '{"running":false}'; Running = $false },
+    @{ Json = '{"running":true}'; Running = $true },
+    @{ Json = '{"running":false,"connection_state":"stopped"}'; Running = $false },
+    @{ Json = '{"running":false,"connection_state":"backoff"}'; Running = $true }
+)) {
+    $script:tunnelStatusJson = $case.Json
+    $actual = Get-AgentDockTunnelRunning -BinaryPath Invoke-TestTunnelCli -RuntimeRoot 'C:\test runtime'
+    if ($actual -ne $case.Running) { throw "Wrong upgrade snapshot for $($case.Json)" }
+}
+foreach ($invalidJson in @('{}', '{"running":"false"}', 'invalid JSON')) {
+    $script:tunnelStatusJson = $invalidJson
+    $rejected = $false
+    try { $null = Get-AgentDockTunnelRunning -BinaryPath Invoke-TestTunnelCli -RuntimeRoot 'C:\test runtime' } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Invalid Tunnel state must be rejected before stopping Core.' }
+}
+$script:tunnelExit = 37
+$rejected = $false
+try { $null = Get-AgentDockTunnelRunning -BinaryPath Invoke-TestTunnelCli -RuntimeRoot 'C:\test runtime' } catch { $rejected = $true }
+if (-not $rejected) { throw 'Failed Tunnel status must not become a stopped snapshot.' }
+
+$InstallChannel = 'script'
+$script:tunnelExit = 0
+$script:tunnelCalls = @()
+Resume-AgentDockTunnel -BinaryPath Invoke-TestTunnelCli -RuntimeRoot 'C:\test runtime'
+if (($script:tunnelCalls[0] -join '|') -ne 'tunnel|start|--runtime-root|C:\test runtime') {
+    throw 'Upgrade resume must only invoke the native start operation.'
+}
+$InstallChannel = 'setup'
+$script:brokerCalls = 0
+function Invoke-SetupRuntimeProcess {
+    param($FilePath, $Arguments, [switch] $WaitForExit)
+    $script:brokerCalls++
+    if ($FilePath -ne 'test-core.exe' -or $Arguments -ne 'tunnel start --runtime-root "C:\test runtime"' -or -not $WaitForExit) {
+        throw 'Setup Tunnel resume lost clean process context or quoted runtime root.'
+    }
+}
+Resume-AgentDockTunnel -BinaryPath test-core.exe -RuntimeRoot 'C:\test runtime'
+if ($script:brokerCalls -ne 1 -or $script:tunnelCalls.Count -ne 1) { throw 'Setup must use the runtime broker.' }
+
+$InstallChannel = 'script'
+$destinationBinary = 'Invoke-TestTunnelCli'
+$runtimeDir = 'C:\test runtime'
+$installWarningCode = ''
+$installWarningMessage = ''
+'@ + "`r`n" + '$restore = {' + $resumeBlock.Extent.Text + '}' + @'
+
+$tunnelWasRunning = $false
+$legacyTunnelCompatibilityRequested = $false
+$script:tunnelCalls = @()
+. $restore
+if ($script:tunnelCalls.Count -ne 0) { throw 'Stopped Tunnel must stay stopped.' }
+$tunnelWasRunning = $true
+$legacyTunnelCompatibilityRequested = $true
+. $restore
+if ($script:tunnelCalls.Count -ne 0) { throw 'Explicit Tunnel configuration must take precedence.' }
+$legacyTunnelCompatibilityRequested = $false
+$script:tunnelExit = 37
+. $restore 3>$null
+if ($installWarningCode -ne 'tunnel-resume-deferred' -or [string]::IsNullOrWhiteSpace($installWarningMessage)) {
+    throw 'Resume failure must return a warning without failing the healthy Core install.'
+}
+$global:LASTEXITCODE = 0
+'@)
+& $tunnelProbe
+
 $bytes = [IO.File]::ReadAllBytes($resolvedInstaller)
 for ($index = 0; $index -lt $bytes.Length; $index++) {
     if ($bytes[$index] -gt 127) {

@@ -111,18 +111,6 @@ AgentDock uses MCP Streamable HTTP. The exact client syntax varies; a typical lo
 
 See the [documentation](https://docs.nexusdock.co/agentdock/) for configuration and usage details.
 
-## Connection recovery
-
-The core service and its remote connection have separate status. NexusDock connections automatically reconnect after a handshake timeout or an unresponsive peer. On Windows, a stalled local control connection does not block other control requests or shutdown; status commands fall back to a system query after two seconds.
-
-Windows stop and restart also clean up Core processes from older generations in the same installation. When the core is unhealthy, start waits for old processes to exit before launching the active generation so they cannot keep its port occupied.
-
-Windows named Cloudflare Tunnels monitor live connections and automatically rebuild a disconnected tunnel after VPN, DNS, or network changes. The control panel and tray show recovery state. Recovery uses backoff and rate limits; manually stopping the tunnel cancels background recovery.
-
-Dynamic MCP connections discard failed sessions so the next independent call can reconnect. ACP pipe writes and queued requests honor cancellation. MCP credentials stay within the configured origin, and clearing OAuth authorization prevents an in-flight exchange or refresh from restoring it.
-
-See [runtime access and recovery](./docs/runtime-access-and-recovery.md) for timeout rules, local API access restrictions, and regression checks.
-
 Personal forks can use the `Fork Test Release` workflow without official publishing credentials. See [fork test releases](./docs/release-distribution.md#个人-fork-测试发布).
 
 ## Runtime directories
@@ -136,7 +124,8 @@ Personal forks can use the `Fork Test Release` workflow without official publish
 
 | <div align="center"><strong>🏆&nbsp;Sponsors&nbsp;🏆</strong></div> | <div align="center"><strong>Description</strong></div> |
 | :------------- | :------ |
-| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>Offers rotating and static residential proxies with 90M+ IPs across 220+ locations. Supporting HTTP(S), SOCKS5, and sticky sessions, it provides flexible proxy solutions for AI agents, browser automation, and web data collection. Plans start at $0.7/GB. Use code <code>PROXY90</code> for 10% off. |
+| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>Offers rotating and static residential proxies with 90M+ IPs across 220+ locations. Supporting HTTP(S), SOCKS5, and sticky sessions, it provides flexible proxy solutions for AI agents, browser automation, and web data collection. Plans start at $0.7/GB. Use code <code>PROXY90</code> for 10% off. [Learn more →](https://www.swiftproxy.net/?ref=agentdock) |
+| <a href="https://www.ipwo.net/?ref=githubagentdock"><img src="./docs/assets/sponsors/ipwo-logo.png" width="180" alt="IPWO"></a> | <br>[**IPWO**](https://www.ipwo.net/?ref=githubagentdock)<br>Provides flexible network connectivity for AI agents and automated workflows. IPWO residential proxies cover 195+ countries and regions, offering rotating, static, and unlimited-bandwidth proxies with HTTP(S)/SOCKS5 support. Suitable for cross-region access testing, web automation, and compliant data collection, helping developers explore more use cases. Use code <code>0200</code> for 10% off. [Learn more →](https://www.ipwo.net/?ref=githubagentdock) |
 
 Want to support the project or showcase your brand? [Contact the maintainer](mailto:t80980@gmail.com).
 

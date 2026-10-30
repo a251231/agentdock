@@ -38,7 +38,7 @@ var toolUIBindings = map[string]UIBinding{
 	"agentdock_context": {ResourceURI: protocol.ContextUIResourceURI, Compact: &UITrigger{}},
 	"workspace_context": {ResourceURI: protocol.WorkspaceUIResourceURI, Compact: &UITrigger{}},
 	"file_edit":         {ResourceURI: protocol.FileChangeUIResourceURI},
-	"task_manage":       {ResourceURI: protocol.TaskProgressUIResourceURI, Compact: &UITrigger{}},
+	"task_create":       {ResourceURI: protocol.TaskProgressUIResourceURI, Compact: &UITrigger{}},
 	"acp_session":       {ResourceURI: protocol.ACPStatusUIResourceURI, Compact: &UITrigger{}},
 	"acp_prompt":        {ResourceURI: protocol.ACPPromptUIResourceURI, Compact: &UITrigger{}},
 	"workflow_template_manage": {

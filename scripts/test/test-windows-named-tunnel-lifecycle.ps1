@@ -297,6 +297,15 @@ function Assert-NamedRuntime {
     }
 
     Wait-ProcessCountByPath -ProcessName 'cloudflared' -BinaryPath $cloudflaredBinary -ExpectedCount 1
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $tunnelStatus = (& $agentDockBinary tunnel status --runtime-root $runtimeDir | ConvertFrom-Json)
+        if ($tunnelStatus.running -and $tunnelStatus.ready) { break }
+        if ([DateTime]::UtcNow -ge $readyDeadline) {
+            throw 'Installer did not restore the running Named Tunnel supervisor.'
+        }
+        Start-Sleep -Milliseconds 250
+    } while ($true)
     $tunnelStartupCommand = Get-ItemPropertyValue -LiteralPath $runKey -Name $cloudflaredStartupName
     if (-not $tunnelStartupCommand.Contains($trayBinary) -or -not $tunnelStartupCommand.Contains('--start-tunnel')) {
         throw "Named Tunnel startup entry is not native: $tunnelStartupCommand"
@@ -310,7 +319,8 @@ function Assert-NamedRuntime {
 function Invoke-Installer {
     param(
         [string] $Archive,
-        [string] $Checksum
+        [string] $Checksum,
+        [string] $ResultFile = ''
     )
 
     $arguments = @{
@@ -323,18 +333,16 @@ function Invoke-Installer {
         StartupValueName = $startupName
         TrayStartupValueName = $trayStartupName
     }
+    if (-not [string]::IsNullOrWhiteSpace($ResultFile)) {
+        $arguments.ResultFile = $ResultFile
+    }
     & $InstallerPath @arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Base installer failed with exit code $LASTEXITCODE."
     }
 
-    # Core install/update is independent from Cloudflare. Restart the already-configured
-    # Tunnel through the runtime command so this test cannot pass via installer hooks.
-    Remove-Item -LiteralPath $namedTokenEnvMarker -Force -ErrorAction SilentlyContinue
-    & $agentDockBinary tunnel restart --runtime-root $runtimeDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "Named Tunnel restart after Core install failed with exit code $LASTEXITCODE."
-    }
+    # Repair and upgrade must restore a Tunnel that was running before installation.
+    # Do not restart it here: that would hide a lost supervisor after Core replacement.
 }
 
 $testId = [Guid]::NewGuid().ToString('N')
@@ -460,8 +468,129 @@ try {
         -ExpectedOAuthPasswordHash $oauthPasswordHash `
         -ExpectedOAuthSecretHash $oauthSecretHash
 
-    # Same-version repair omits mode, origin and Token. All three must be hydrated from committed runtime state.
+    # A deliberately stopped Tunnel must stay stopped even when autostart is enabled.
+    & $agentDockBinary tunnel stop --runtime-root $runtimeDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the isolated Named Tunnel.' }
     Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    $stoppedTunnel = (& $agentDockBinary tunnel status --runtime-root $runtimeDir | ConvertFrom-Json)
+    if ($stoppedTunnel.running) { throw 'Repair unexpectedly started a deliberately stopped Tunnel.' }
+    & $agentDockBinary tunnel start --runtime-root $runtimeDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restart the isolated Named Tunnel before repair.' }
+
+    # Same-version repair omits mode, origin and Token. Existing running state must be restored.
+    Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    Assert-NamedRuntime `
+        -ExpectedVersion $sourceVersion `
+        -ExpectedTokenHash $tokenHash `
+        -ExpectedAuthHash $authHash `
+        -ExpectedOAuthPasswordHash $oauthPasswordHash `
+        -ExpectedOAuthSecretHash $oauthSecretHash
+
+    # A bad Tunnel status read must not stop even a same-generation Core.
+    $activeSourceCore = Join-Path $runtimeDir "versions\$sourceVersion\agentdock-core.exe"
+    $corePidsBefore = @(Get-ProcessIdsByPath -ProcessName 'agentdock-core' -BinaryPath $activeSourceCore | Sort-Object)
+    $tunnelPidsBefore = @(Get-ProcessIdsByPath -ProcessName 'cloudflared' -BinaryPath $cloudflaredBinary | Sort-Object)
+    if ($corePidsBefore.Count -lt 2 -or $tunnelPidsBefore.Count -ne 1) {
+        throw 'Snapshot test requires a running Core and Tunnel supervisor.'
+    }
+    $snapshotFailureInstaller = Join-Path $root 'install-fail-tunnel-status.ps1'
+    $installerText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $InstallerPath).Path)
+    $snapshotMarker = '$tunnelWasRunning = Get-AgentDockTunnelRunning -BinaryPath $sourceBinary -RuntimeRoot $runtimeDir'
+    if (-not $installerText.Contains($snapshotMarker)) { throw 'Missing pre-upgrade Tunnel snapshot boundary.' }
+    [IO.File]::WriteAllText(
+        $snapshotFailureInstaller,
+        $installerText.Replace($snapshotMarker, "throw 'simulated Tunnel status failure'"),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $originalInstaller = $InstallerPath
+    $snapshotFailureObserved = $false
+    try {
+        $InstallerPath = $snapshotFailureInstaller
+        Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    } catch {
+        if (-not $_.Exception.Message.Contains('simulated Tunnel status failure')) { throw }
+        $snapshotFailureObserved = $true
+    } finally {
+        $InstallerPath = $originalInstaller
+    }
+    if (-not $snapshotFailureObserved) { throw 'Tunnel snapshot failure was not injected.' }
+    $corePidsAfter = @(Get-ProcessIdsByPath -ProcessName 'agentdock-core' -BinaryPath $activeSourceCore | Sort-Object)
+    $tunnelPidsAfter = @(Get-ProcessIdsByPath -ProcessName 'cloudflared' -BinaryPath $cloudflaredBinary | Sort-Object)
+    if (($corePidsBefore -join ',') -ne ($corePidsAfter -join ',') -or
+        ($tunnelPidsBefore -join ',') -ne ($tunnelPidsAfter -join ',')) {
+        throw 'Failed Tunnel snapshot unexpectedly restarted the existing Core or supervisor.'
+    }
+    Assert-NamedRuntime `
+        -ExpectedVersion $sourceVersion `
+        -ExpectedTokenHash $tokenHash `
+        -ExpectedAuthHash $authHash `
+        -ExpectedOAuthPasswordHash $oauthPasswordHash `
+        -ExpectedOAuthSecretHash $oauthSecretHash
+
+    # Fail after candidate activation but before commit. Rollback must resume the
+    # original Tunnel through the restored source generation, without test-side restart.
+    $rollbackInstaller = Join-Path $root 'install-fail-before-commit.ps1'
+    $installerText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $InstallerPath).Path)
+    $commitMarker = '    if ($enginePrepared -and (-not $engineCommitted -or $healthStatus -eq ''healthy'')) {'
+    if (-not $installerText.Contains($commitMarker)) { throw 'Missing pre-commit fault injection boundary.' }
+    $installerText = $installerText.Replace($commitMarker, "    throw 'simulated pre-commit adapter failure'`r`n" + $commitMarker)
+    [IO.File]::WriteAllText($rollbackInstaller, $installerText, [Text.UTF8Encoding]::new($false))
+    $originalInstaller = $InstallerPath
+    $rollbackObserved = $false
+    try {
+        $InstallerPath = $rollbackInstaller
+        Invoke-Installer -Archive $TargetAgentDockArchive -Checksum $TargetAgentDockChecksumFile
+    } catch {
+        if (-not $_.Exception.Message.Contains('simulated pre-commit adapter failure')) { throw }
+        $rollbackObserved = $true
+    } finally {
+        $InstallerPath = $originalInstaller
+    }
+    if (-not $rollbackObserved) { throw 'Pre-commit failure was not injected.' }
+    Assert-NamedRuntime `
+        -ExpectedVersion $sourceVersion `
+        -ExpectedTokenHash $tokenHash `
+        -ExpectedAuthHash $authHash `
+        -ExpectedOAuthPasswordHash $oauthPasswordHash `
+        -ExpectedOAuthSecretHash $oauthSecretHash
+
+    # Core rollback remains complete even when recovering the Tunnel fails.
+    # In particular, an OS-adapter rollback-failed journal must not be left behind.
+    $resumeFailureInstaller = Join-Path $root 'install-fail-tunnel-resume.ps1'
+    $rollbackInstallerText = [IO.File]::ReadAllText($rollbackInstaller)
+    $resumeMarker = 'function Resume-AgentDockTunnel {'
+    if (-not $rollbackInstallerText.Contains($resumeMarker)) { throw 'Missing Tunnel restore fault injection boundary.' }
+    [IO.File]::WriteAllText(
+        $resumeFailureInstaller,
+        $rollbackInstallerText.Replace($resumeMarker, $resumeMarker + "`r`n    throw 'simulated Tunnel resume failure'"),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $resumeFailureResult = Join-Path $root 'resume-failure-result.ini'
+    $rollbackObserved = $false
+    try {
+        $InstallerPath = $resumeFailureInstaller
+        Invoke-Installer -Archive $TargetAgentDockArchive -Checksum $TargetAgentDockChecksumFile -ResultFile $resumeFailureResult
+    } catch {
+        if (-not $_.Exception.Message.Contains('simulated pre-commit adapter failure')) { throw }
+        $rollbackObserved = $true
+    } finally {
+        $InstallerPath = $originalInstaller
+    }
+    if (-not $rollbackObserved) { throw 'Tunnel restore fault injection did not reach rollback.' }
+    $failureResult = [IO.File]::ReadAllText($resumeFailureResult)
+    if (-not $failureResult.Contains('WarningCode=tunnel-resume-deferred') -or
+        $failureResult.Contains('Code=rollback-failed') -or
+        -not $failureResult.Contains('simulated pre-commit adapter failure')) {
+        throw "Tunnel resume failure obscured the original error or poisoned rollback: $failureResult"
+    }
+    $sourceActive = Get-Content -LiteralPath $activeVersionPath -Raw | ConvertFrom-Json
+    if ($sourceActive.state -ne 'committed' -or $sourceActive.active_version -ne $sourceVersion) {
+        throw 'Tunnel resume failure must leave the original Core generation committed.'
+    }
+    Wait-Healthy -Url $healthUrl
+    Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum
+    & $agentDockBinary tunnel start --runtime-root $runtimeDir
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated Named Tunnel after the warning test.' }
     Assert-NamedRuntime `
         -ExpectedVersion $sourceVersion `
         -ExpectedTokenHash $tokenHash `

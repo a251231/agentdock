@@ -45,6 +45,7 @@ Coding Agent 的发现、Codex / Claude Adapter 安装、Grok stdio 模式、平
 - macOS Desktop 的 `agentdock.env` 包含运行所需配置，可能含秘密；文件必须保持仅当前用户可读写。
 - Linux 官方安装器默认把环境文件按 root:root、0600 写入，并通过 systemd/OpenRC 注入服务进程；不要为了方便把权限放宽。
 - Docker 的环境变量属于容器创建配置。Compose 文件或 env file 修改后，如果容器没有被重新创建，新进程可能仍使用旧的容器配置。
+- MCP Apps 启用时，多步骤任务通过 `task_create` 唯一挂载一张 live Task 卡片；后续 `task_manage` checkpoint / final_review / complete 只更新持久化 Task，卡片使用现有 `task_manage action=get` 原地读取权威状态，不再重复挂载 Task UI。该行为在 `full` 和 `compact` 模式下保持一致；旧的 `task_manage action=create` 只保留创建兼容，不再承担 live Task UI 入口。
 - `AGENTDOCK_COMMAND_ENV_FROM_ENV_JSON` 只允许显式映射；它不会自动把登录 Shell 的全部环境传给 `exec_command`。
 
 ## 判断“配置没生效”时

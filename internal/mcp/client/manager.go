@@ -667,6 +667,7 @@ func (m *Manager) Call(ctx context.Context, qualifiedName string, arguments map[
 	if err != nil {
 		return nil, err
 	}
+	unlockState = sync.OnceFunc(unlockState)
 	defer unlockState()
 	if !cfg.Enabled {
 		return nil, newError("MCP_SERVER_DISABLED", "dynamic MCP server is disabled", false, map[string]any{"server": server}, nil)
@@ -694,17 +695,51 @@ func (m *Manager) Call(ctx context.Context, qualifiedName string, arguments map[
 		return nil, err
 	}
 	callStartedAt := time.Now()
-	result, err := state.client.callTool(ctx, name, arguments)
+	var retired protocolClient
+	released := false
+	callCtx := contextWithSessionRetirement(ctx, func() {
+		if released {
+			return
+		}
+		// 同一协程持有 state.mu。SDK 收到会终止会话的响应后会立刻发 DELETE，
+		// 所以要在那之前把失效连接移出缓存并放开锁。
+		retired = state.client
+		state.client = nil
+		state.tools = nil
+		recordStateError(state, newError("MCP_CONNECTION_FAILED", "call MCP tool", true, map[string]any{"server": cfg.Name}, nil))
+		unlockState()
+		released = true
+	})
+	result, err := state.client.callTool(callCtx, name, arguments)
 	observability.RecordStage(ctx, observability.StageMCPRemoteCall, callStartedAt, err == nil)
+	if released {
+		if err != nil {
+			state.mu.Lock()
+			// 下一次调用可能已经换上新会话。只在缓存仍是这次失效连接时覆盖错误。
+			if state.client == nil || state.client == retired {
+				recordStateError(state, err)
+			}
+			state.mu.Unlock()
+		}
+		if retired != nil {
+			_ = retired.close()
+		}
+		return result, err
+	}
 	if err != nil {
 		var connectionErr *Error
 		if errors.As(err, &connectionErr) && connectionErr.Code == "MCP_CONNECTION_FAILED" {
-			// 失效会话必须退休；下一次独立调用重新发现，当前调用不重放。
+			// 失效会话必须退出缓存；下一次独立调用重新发现，当前调用不重放。
 			// 业务错误、超时和保留连接的 transport rejection 不清理缓存。
-			_ = state.client.close()
+			// 响应没能提前放开锁时，仍然先清缓存再关闭。关闭失败不把失效连接留回来。
+			retired = state.client
 			state.client = nil
 			state.tools = nil
 			recordStateError(state, err)
+			unlockState()
+			if retired != nil {
+				_ = retired.close()
+			}
 		}
 		return nil, err
 	}
